@@ -5,6 +5,12 @@ import { GoogleGenAI } from "@google/genai";
 
 // SVG Icons defined as separate components for reusability and clarity.
 
+const SparklesIcon: FC<{ className?: string }> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
+    </svg>
+);
+
 const UploadIcon: FC<{ className?: string }> = ({ className }) => (
   <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -803,6 +809,11 @@ const App: FC = () => {
    const handleAnalyzeMusicStyle = useCallback(async () => {
     if (!file || !audioBuffer) return;
 
+    if (apiKeys.length === 0) {
+        setGenerationError("Vui lòng thêm API key trong Cài đặt để tiếp tục.");
+        return;
+    }
+
     setIsAnalyzing(true);
     setGenerationError(null);
     setLoadingMessage('Phân tích tổng thể bài hát...');
@@ -867,7 +878,7 @@ const App: FC = () => {
         setIsAnalyzing(false);
         setLoadingMessage('');
     }
-}, [file, audioBuffer, runRequestWithKeyRotation]);
+}, [file, audioBuffer, runRequestWithKeyRotation, apiKeys.length]);
 
   const handleFileUpload = useCallback((selectedFile: File) => {
     if (!selectedFile.type.startsWith('audio/')) {
@@ -989,37 +1000,43 @@ const App: FC = () => {
     
     let accumulatedPrompts: MusicPrompt[] = [];
     let previousSceneDescription = "Đây là cảnh mở đầu của video ca nhạc.";
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
 
     for (let i = 0; i < prompts.length; i++) {
         const promptChunk = prompts[i];
         setLoadingMessage(`Đang xử lý phân đoạn ${i + 1} / ${prompts.length}...`);
         
-        try {
-            const pStr = await runRequestWithKeyRotation(async (apiKey) => {
-                const ai = new GoogleGenAI({ apiKey });
+        let success = false;
+        retryCount = 0;
 
-                const frameCount = Math.floor(promptChunk.duration * audioBuffer.sampleRate);
-                const segmentBuffer = audioContextRef.current!.createBuffer(
-                    audioBuffer.numberOfChannels,
-                    frameCount,
-                    audioBuffer.sampleRate
-                );
-                for (let j = 0; j < audioBuffer.numberOfChannels; j++) {
-                    const channelData = audioBuffer.getChannelData(j);
-                    const segmentData = segmentBuffer.getChannelData(j);
-                    const startOffset = Math.floor(promptChunk.startTime * audioBuffer.sampleRate);
-                    segmentData.set(channelData.subarray(startOffset, startOffset + frameCount));
-                }
-                const wavBlob = audioBufferToWav(segmentBuffer);
-                const base64Data = await new Promise<string>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve((reader.result as string).split(',')[1]);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(wavBlob);
-                });
-                
-                const charactersString = actorDescriptions.map((desc, i) => `- Nhân vật ${i + 1}: ${desc}`).join('\n');
-                const userPromptForChunk = `You are an expert AI director for Vietnamese music videos. Your task is to analyze the provided 8-second audio segment and generate a creative, descriptive visual prompt for a video generation model, forming part of a larger narrative.
+        while(!success && retryCount < MAX_RETRIES) {
+          try {
+              const pStr = await runRequestWithKeyRotation(async (apiKey) => {
+                  const ai = new GoogleGenAI({ apiKey });
+
+                  const frameCount = Math.floor(promptChunk.duration * audioBuffer.sampleRate);
+                  const segmentBuffer = audioContextRef.current!.createBuffer(
+                      audioBuffer.numberOfChannels,
+                      frameCount,
+                      audioBuffer.sampleRate
+                  );
+                  for (let j = 0; j < audioBuffer.numberOfChannels; j++) {
+                      const channelData = audioBuffer.getChannelData(j);
+                      const segmentData = segmentBuffer.getChannelData(j);
+                      const startOffset = Math.floor(promptChunk.startTime * audioBuffer.sampleRate);
+                      segmentData.set(channelData.subarray(startOffset, startOffset + frameCount));
+                  }
+                  const wavBlob = audioBufferToWav(segmentBuffer);
+                  const base64Data = await new Promise<string>((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve((reader.result as string).split(',')[1]);
+                      reader.onerror = reject;
+                      reader.readAsDataURL(wavBlob);
+                  });
+                  
+                  const charactersString = actorDescriptions.map((desc, i) => `- Nhân vật ${i + 1}: ${desc}`).join('\n');
+                  const userPromptForChunk = `You are an expert AI director for Vietnamese music videos. Your task is to analyze the provided 8-second audio segment and generate a creative, descriptive visual prompt for a video generation model, forming part of a larger narrative.
 
 **--- OVERALL PROJECT CONTEXT ---**
 - **Music Style:** ${musicStyle}
@@ -1041,36 +1058,47 @@ The previous scene was described as: "${previousSceneDescription}"
 
 **--- FINAL OUTPUT RULE ---**
 Your entire response must be ONLY the final descriptive text prompt, starting with the segment number '${promptChunk.id + 1}. '. Absolutely no other text, markdown, JSON, or explanations.`;
-                
+                  
 
-                const audioPart = { inlineData: { mimeType: 'audio/wav', data: base64Data } };
-                const textPart = { text: userPromptForChunk };
+                  const audioPart = { inlineData: { mimeType: 'audio/wav', data: base64Data } };
+                  const textPart = { text: userPromptForChunk };
 
-                const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: { parts: [audioPart, textPart] },
-                });
-                
-                return response.text.trim();
-            });
-            
-            const newMusicPrompt: MusicPrompt = {
-                segment: promptChunk.id + 1,
-                prompt: pStr,
-            };
-            
-            accumulatedPrompts.push(newMusicPrompt);
-            setMusicPrompts([...accumulatedPrompts]);
-            previousSceneDescription = pStr;
+                  const response = await ai.models.generateContent({
+                      model: 'gemini-2.5-flash',
+                      contents: { parts: [audioPart, textPart] },
+                  });
+                  
+                  return response.text.trim();
+              });
+              
+              const newMusicPrompt: MusicPrompt = {
+                  segment: promptChunk.id + 1,
+                  prompt: pStr,
+              };
+              
+              accumulatedPrompts.push(newMusicPrompt);
+              setMusicPrompts([...accumulatedPrompts]);
+              previousSceneDescription = pStr;
+              success = true;
 
-        } catch(err) {
-            const error = err as any;
-            console.error(`Lỗi tạo prompt cho phân đoạn ${i+1}:`, error);
-            const errorMessage = error instanceof Error ? error.message : `Lỗi không xác định ở phân đoạn ${i+1}.`;
-            setGenerationError(errorMessage);
-            setIsGenerating(false);
-            setLoadingMessage('');
-            return;
+          } catch(err) {
+              const error = err as any;
+              console.error(`Lỗi tạo prompt cho phân đoạn ${i+1} (lần thử ${retryCount + 1}):`, error);
+              const isOverloaded = error instanceof Error && (error.message.includes('503') || error.message.toLowerCase().includes('overloaded'));
+              
+              if (isOverloaded && retryCount < MAX_RETRIES - 1) {
+                  retryCount++;
+                  const delay = Math.pow(2, retryCount) * 1000;
+                  setLoadingMessage(`Máy chủ AI đang bận. Thử lại sau ${delay / 1000} giây... (phân đoạn ${i + 1})`);
+                  await new Promise(resolve => setTimeout(resolve, delay));
+              } else {
+                  const errorMessage = error instanceof Error ? error.message : `Lỗi không xác định ở phân đoạn ${i+1}.`;
+                  setGenerationError(errorMessage);
+                  setIsGenerating(false);
+                  setLoadingMessage('');
+                  return; // Stop the whole process
+              }
+          }
         }
     }
 
@@ -1190,6 +1218,23 @@ Your entire response must be ONLY the final descriptive text prompt, starting wi
 
   return (
     <div className="min-h-screen flex flex-col items-center p-4 sm:p-6 lg:p-8 relative">
+       <div className="w-full max-w-7xl mx-auto mb-6 p-3 bg-white/60 backdrop-blur-sm border border-gray-200 rounded-lg shadow-sm flex items-center justify-center gap-4 text-center">
+        <SparklesIcon className="w-8 h-8 text-cyan-500 flex-shrink-0 hidden sm:block" />
+        <div className="text-sm text-gray-700">
+            <p className="font-semibold">App của Thọ - <a href="tel:0934415387" className="hover:underline">0934415387</a></p>
+            <p>
+                Tham Gia Nhóm Zalo tạo app:{' '}
+                <a 
+                    href="https://zalo.me/g/sgkzgk550" 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-cyan-600 hover:underline font-medium"
+                >
+                    https://zalo.me/g/sgkzgk550
+                </a>
+            </p>
+        </div>
+      </div>
        <SettingsModal 
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
